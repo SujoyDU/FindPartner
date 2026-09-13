@@ -25,6 +25,9 @@ class UserOut(UserBase):
 
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 # Schema for listing users (admin view)
 class UserList(UserOut):

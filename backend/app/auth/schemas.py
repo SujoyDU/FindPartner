@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+from datetime import datetime
 
 # Pydantic schemas for authentication
 
@@ -13,11 +14,14 @@ class UserCreate(UserBase):
 class UserOut(UserBase):
     id: int
     is_active: bool
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
     
     class Config:
         from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 class UserLogin(BaseModel):
     email: EmailStr
