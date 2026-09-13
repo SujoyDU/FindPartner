@@ -14,10 +14,9 @@ app = FastAPI(
 # Include authentication routes
 app.include_router(auth_router)
 
-@app.get("/api/health")
-async def health_check():
-    return {"status": "healthy"}
+# Print all routes
+print("Registered routes:")
+for route in app.routes:
+    print(f"  {route.methods} {route.path}")
 
-@app.get("/")
-async def root():
-    return {"message": "Welcome to FindPartner API"}
+print("\nAPI Documentation available at: http://localhost:8000/docs")
