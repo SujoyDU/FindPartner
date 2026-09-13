@@ -7,7 +7,6 @@ class UserBase(BaseModel):
     username: str
     email: EmailStr
     is_active: bool = True
-    is_admin: bool = False
 
 # Schema for creating a new user
 class UserCreate(UserBase):
@@ -17,8 +16,6 @@ class UserCreate(UserBase):
 class UserUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[EmailStr] = None
-    is_active: Optional[bool] = None
-    is_admin: Optional[bool] = None
 
 # Schema for reading user data (response)
 class UserOut(UserBase):

@@ -42,9 +42,6 @@ def update_current_user_profile(
         current_user.username = user_update.username
     if user_update.email is not None:
         current_user.email = user_update.email
-    if user_update.is_active is not None:
-        current_user.is_active = user_update.is_active
-    # Note: is_admin cannot be changed by regular users
     
     db.commit()
     db.refresh(current_user)

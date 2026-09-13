@@ -21,16 +21,3 @@ def get_current_admin_user(current_user: User = Depends(get_current_user)):
             detail="Access denied. Admin privileges required."
         )
     return current_user
-
-def check_user_ownership(current_user: User = Depends(get_current_user), user_id: int = None):
-    """
-    Dependency to check if the current user owns the requested resource.
-    
-    Returns:
-        User: The current authenticated user
-    
-    Raises:
-        HTTPException: If the user is not authenticated or does not own the resource
-    """
-    # This function would be implemented based on your specific ownership logic
-    return current_user

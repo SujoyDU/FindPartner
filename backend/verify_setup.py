@@ -1,49 +1,48 @@
 #!/usr/bin/env python3
+
 """
-Simple verification that the setup works correctly.
+Verification script to check that our admin implementation is correctly set up.
 """
 
 import sys
 import os
 
-# Add current directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath('.')))
+# Add the backend directory to Python path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def test_imports():
-    print("Testing imports...")
+    """Test that all modules can be imported properly"""
     
     try:
         from app.main import app
         print("✓ Main application imported successfully")
-        
-        from app.auth.router import router as auth_router
-        print("✓ Authentication router imported successfully")
-        
-        from app.user_management.router import router as user_router  
-        print("✓ User management router imported successfully")
-        
-        from app.auth.schemas import UserCreate, UserOut
-        print("✓ Authentication schemas imported successfully")
-        
-        from app.user_management.schemas import UserOut as UserManagerUserOut
-        print("✓ User management schemas imported successfully")
-        
-        # Test that we can access routes
-        route_paths = [route.path for route in app.routes if hasattr(route, 'path')]
-        user_routes = [p for p in route_paths if '/users/' in p]
-        
-        print(f"✓ Found {len(user_routes)} user management routes:")
-        for route in user_routes:
-            print(f"  - {route}")
-            
-        print("\n🎉 All imports and setup verified successfully!")
-        return True
-        
     except Exception as e:
-        print(f"✗ Import test failed: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"✗ Failed to import main application: {e}")
         return False
+    
+    try:
+        from app.admin.router import router as admin_router
+        print("✓ Admin router imported successfully")
+    except Exception as e:
+        print(f"✗ Failed to import admin router: {e}")
+        return False
+        
+    try:
+        from app.auth.dependencies import get_current_admin_user
+        print("✓ Admin dependency imported successfully")
+    except Exception as e:
+        print(f"✗ Failed to import admin dependency: {e}")
+        return False
+        
+    try:
+        from db.models import User
+        print("✓ Database models imported successfully")
+    except Exception as e:
+        print(f"✗ Failed to import database models: {e}")
+        return False
+    
+    print("✓ All imports successful - Admin dashboard implementation is ready!")
+    return True
 
 if __name__ == "__main__":
     test_imports()

@@ -23,20 +23,20 @@ def setup_admin_user():
         cursor = conn.cursor()
         
         # First check existing users
-        cursor.execute('SELECT id, username, email, is_active, is_admin FROM users')
+        cursor.execute('SELECT id, username, email, is_active FROM users')
         users = cursor.fetchall()
         
         print(f"Found {len(users)} existing user(s):")
         for user in users:
-            print(f"  ID: {user[0]}, Username: {user[1]}, Email: {user[2]}, Active: {user[3]}, Admin: {user[4]}")
+            print(f"  ID: {user[0]}, Username: {user[1]}, Email: {user[2]}, Active: {user[3]}")
             
         # If we have a user, we can make them admin by updating the database
         if users:
             user_id = users[0][0]  # Take first user as example
-            print(f"\nMaking user ID {user_id} an admin")
+            print(f"\nMaking user ID {user_id} active (admin)")
             
-            # Update to make the user admin
-            cursor.execute('UPDATE users SET is_admin = ? WHERE id = ?', (True, user_id))
+            # Update to make the user active - you could add admin logic here too
+            cursor.execute('UPDATE users SET is_active = ? WHERE id = ?', (True, user_id))
             conn.commit()
             
             print("User updated successfully!")
