@@ -1,3 +1,5 @@
+# ./backend/app/auth/schemas.py
+
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime
@@ -7,7 +9,7 @@ from datetime import datetime
 class UserBase(BaseModel):
     username: str
     email: EmailStr
-    is_admin: bool = False
+    # is_admin removed from base class as it should not be set during registration
 
 class UserCreate(UserBase):
     password: str
@@ -34,3 +36,4 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     user_id: Optional[int] = None
+
