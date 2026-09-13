@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from db.database import engine, Base
 from core.config import settings
 from app.auth.router import router as auth_router
+from app.user_management.router import router as user_management_router
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -13,6 +14,9 @@ app = FastAPI(
 
 # Include authentication routes
 app.include_router(auth_router)
+
+# Include user management routes
+app.include_router(user_management_router)
 
 @app.get("/api/health")
 async def health_check():
