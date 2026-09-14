@@ -72,10 +72,29 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault(
-        "Content-Security-Policy",
-        "default-src 'self'; base-uri 'self'; form-action 'self'",
+    # Swagger UI (/docs, /redoc) is served by FastAPI with inline <script>/<style>
+    # and pulls assets from cdn.jsdelivr.net (and fonts.googleapis.com for /redoc).
+    # A blanket "default-src 'self'" CSP blocks all of that -> blank white page.
+    # So the docs endpoints get a deliberately relaxed CSP; everything else stays locked down.
+    docs_paths = (
+        request.url.path == "/docs"
+        or request.url.path == "/redoc"
+        or request.url.path.startswith(f"{settings.API_V1_STR}/docs")
+        or request.url.path.startswith(f"{settings.API_V1_STR}/redoc")
     )
+    if docs_paths:
+        csp = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "font-src https://fonts.gstatic.com; "
+            "img-src 'self' data: https://fastapi.tiangolo.com https://cdn.jsdelivr.net; "
+            "connect-src 'self' https://cdn.jsdelivr.net; "
+            "base-uri 'self'; form-action 'self'"
+        )
+    else:
+        csp = "default-src 'self'; base-uri 'self'; form-action 'self'"
+    response.headers.setdefault("Content-Security-Policy", csp)
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     return response
 
