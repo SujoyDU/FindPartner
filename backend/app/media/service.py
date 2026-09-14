@@ -1,186 +1,125 @@
-from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
+
 from db.models import Media
-from app.media.storage_service import StorageService
-import secrets
-import string
+from app.media.storage_service import StorageBackend
+
+
+def _generate_share_token() -> str:
+    """A 32-char URL-safe token drawn from a cryptographically secure source.
+
+    The alphabet (0-9, A-Za-z) avoids URL-escaping issues and yields ~190 bits
+    of entropy, which is far beyond brute-forcable.
+    """
+    import secrets
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    return "".join(secrets.choice(alphabet) for _ in range(32))
+
 
 class MediaService:
-    def __init__(self, db: Session, storage_service: StorageService):
+    """Business logic for media.
+
+    All ownership-scoped reads are hard-scoped to ``user_id`` so an
+    authenticated user can never fetch another user's private media by guessing
+    IDs (BOLA / IDOR protection). Non-owned/absent rows uniformly return 404 so
+    IDs are not enumerable.
+    """
+
+    def __init__(self, db: Session, storage: StorageBackend):
         self.db = db
-        self.storage_service = storage_service
-    
-    def create_media(self, file_data: dict, user_id: int, is_public: bool = False):
-        """Create a new media record and save the file"""
-        # Generate secure share token for public media
-        share_token = None
-        if is_public:
-            share_token = self._generate_secure_token()
-        
-        # Create media object
+        self.storage = storage
+
+    def create_media(
+        self,
+        *,
+        file_name: str,
+        storage_key: str,
+        category: str,
+        content_type: str,
+        user_id: int,
+        is_public: bool = False,
+    ) -> Media:
         media = Media(
             user_id=user_id,
-            file_name=file_data['filename'],
-            file_path=file_data['file_path'],
-            file_type=file_data['file_type'],
+            file_name=file_name,
+            file_path=storage_key,
+            file_type=category,
+            content_type=content_type,
             is_public=is_public,
-            share_token=share_token
+            share_token=_generate_share_token() if is_public else None,
         )
-        
         self.db.add(media)
         self.db.commit()
         self.db.refresh(media)
-        
         return media
-    
+
     def get_user_media(self, user_id: int):
-        """Get all media owned by a user"""
-        return self.db.query(Media).filter(Media.user_id == user_id).all()
-    
-    def get_media_by_id(self, media_id: int, user_id: int = None):
-        """Get a specific media item if it belongs to the user or is public"""
-        media = self.db.query(Media).filter(Media.id == media_id).first()
-        
+        return (
+            self.db.query(Media)
+            .filter(Media.user_id == user_id)
+            .order_by(Media.created_at.desc())
+            .all()
+        )
+
+    def get_media_by_id(self, media_id: int, user_id: int) -> Media:
+        """Owner-scoped fetch; 404 if it doesn't exist OR isn't the user's."""
+        media = (
+            self.db.query(Media)
+            .filter(Media.id == media_id, Media.user_id == user_id)
+            .first()
+        )
         if not media:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Media not found"
+                detail="Media not found",
             )
-        
-        # If user_id provided, check ownership
-        if user_id and media.user_id != user_id:
-            # Check if media is public
-            if not media.is_public:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied. Media is private."
-                )
-        
         return media
-    
-    def get_public_media_by_share_token(self, share_token: str):
-        """Get public media by share token"""
-        media = self.db.query(Media).filter(
-            Media.share_token == share_token,
-            Media.is_public == True
-        ).first()
-        
+
+    def get_public_media_by_share_token(self, share_token: str) -> Media:
+        media = (
+            self.db.query(Media)
+            .filter(Media.share_token == share_token, Media.is_public.is_(True))
+            .first()
+        )
         if not media:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Public media not found"
+                detail="Public media not found",
             )
-        
         return media
-    
-    def update_media_visibility(self, media_id: int, user_id: int, is_public: bool):
-        """Update media visibility (public/private)"""
-        media = self.db.query(Media).filter(
-            Media.id == media_id,
-            Media.user_id == user_id
-        ).first()
-        
+
+    def update_media_visibility(self, media_id: int, user_id: int, is_public: bool) -> Media:
+        media = (
+            self.db.query(Media)
+            .filter(Media.id == media_id, Media.user_id == user_id)
+            .first()
+        )
         if not media:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Media not found"
+                detail="Media not found",
             )
-        
-        # Update visibility
         media.is_public = is_public
-        
-        # Generate share token for public media or clear it for private
         if is_public and not media.share_token:
-            media.share_token = self._generate_secure_token()
+            media.share_token = _generate_share_token()
         elif not is_public:
-            media.share_token = None
-            
+            media.share_token = None  # revoke the shared link
         self.db.commit()
         self.db.refresh(media)
-        
         return media
-    
-    def delete_media(self, media_id: int, user_id: int):
-        """Delete a media item if it belongs to the user"""
-        media = self.db.query(Media).filter(
-            Media.id == media_id,
-            Media.user_id == user_id
-        ).first()
-        
+
+    def delete_media(self, media_id: int, user_id: int) -> bool:
+        media = (
+            self.db.query(Media)
+            .filter(Media.id == media_id, Media.user_id == user_id)
+            .first()
+        )
         if not media:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Media not found"
+                detail="Media not found",
             )
-        
-        # Delete from storage
-        self.storage_service.delete_file(media.file_path)
-        
-        # Delete from database
+        self.storage.delete(media.file_path)  # best-effort; swallow if already gone
         self.db.delete(media)
         self.db.commit()
-        
-        return True
-    
-    def _generate_secure_token(self) -> str:
-        """Generate a secure random token"""
-        return ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-        
-        self.db.add(media)
-        self.db.commit()
-        self.db.refresh(media)
-        
-        return media
-    
-    def get_user_media(self, user_id: int):
-        """Get all media owned by a user"""
-
-        return self.db.query(Media).filter(Media.user_id == user_id).all()
-    
-
-
-
-
-    def get_media_by_id(self, media_id: int, user_id: int = None):
-        """Get a specific media item if it belongs to the user or is public"""
-        media = self.db.query(Media).filter(Media.id == media_id).first()
-        
-        if not media:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Media not found"
-            )
-        
-        # If user_id provided, check ownership
-        if user_id and media.user_id != user_id:
-            # Check if media is public
-            if not media.is_public:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied. Media is private."
-                )
-        
-        return media
-    
-    def delete_media(self, media_id: int, user_id: int):
-        """Delete a media item if it belongs to the user"""
-
-        media = self.db.query(Media).filter(
-            Media.id == media_id,
-            Media.user_id == user_id
-        ).first()
-        
-        if not media:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Media not found"
-            )
-        
-        # Delete from storage
-        self.storage_service.delete_file(media.file_path)
-        
-        # Delete from database
-        self.db.delete(media)
-        self.db.commit()
-        
         return True
