@@ -1,0 +1,37 @@
+name: Local Web App Development
+version: 0.0.1
+schema: v1
+
+models:
+
+  - name: Qwen3.8 27B
+    provider: ollama
+    model: qwen3.8:27b
+    apiBase: http://localhost:11434
+    roles:
+      - chat
+      - edit
+      - apply
+    capabilities:
+      - tool_use
+    defaultCompletionOptions:
+      contextLength: 65536
+
+  - name: Qwen3 14B
+    provider: ollama
+    model: qwen3:14b
+    apiBase: http://localhost:11434
+    roles:
+      - chat
+      - edit
+    defaultCompletionOptions:
+      contextLength: 16384
+
+  - name: Qwen2.5 Coder 1.5B
+    provider: ollama
+    model: qwen2.5-coder:1.5b-base
+    apiBase: http://localhost:11434
+    roles:
+      - autocomplete
+    defaultCompletionOptions:
+      contextLength: 4096

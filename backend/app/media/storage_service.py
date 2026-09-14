@@ -3,6 +3,8 @@ import uuid
 from pathlib import Path
 from typing import IO, Union
 from fastapi import HTTPException, status
+import secrets
+import string
 
 class StorageService:
     def __init__(self, storage_path: str = "storage"):
@@ -23,21 +25,22 @@ class StorageService:
         Raises:
             HTTPException: If file cannot be saved
         """
-        # Generate a secure unique filename
-        secure_filename = f"{uuid.uuid4().hex}_{filename}"
+        # Sanitize filename
+        safe_filename = self._sanitize_filename(filename)
+        
+        # Generate a secure unique filename to prevent collisions and security issues
+        secure_filename = f"{uuid.uuid4().hex}_{safe_filename}"
         
         # Create full path
         file_path = self.storage_path / secure_filename
         
         try:
-            if hasattr(file, read):
-                # Handle file-like objects (like UploadFile)
-                with open(file_path, wb) as buffer:
+            if hasattr(file, 'read'):  # Handle file-like objects (like UploadFile)
+                with open(file_path, 'wb') as buffer:
                     content = file.read()
                     buffer.write(content)
-            else:
-                # Handle bytes directly
-                with open(file_path, wb) as buffer:
+            else:  # Handle bytes directly
+                with open(file_path, 'wb') as buffer:
                     buffer.write(file)
             
             return secure_filename
@@ -46,6 +49,23 @@ class StorageService:
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to save file: {str(e)}"
             )
+    
+    def _sanitize_filename(self, filename: str) -> str:
+        """
+        Sanitize filename to prevent path traversal and other security issues.
+        
+        Args:
+            filename: Original filename
+            
+        Returns:
+            str: Sanitized filename
+        """
+        # Remove any directory traversal characters
+        filename = filename.replace('/', '').replace('\\', '')
+        # Keep only alphanumeric, dots, underscores, and hyphens
+        import re
+        safe_chars = re.sub(r'[^\w\.\-]', '', filename)
+        return safe_chars or "unnamed_file"
     
     def get_file_path(self, filename: str) -> Path:
         """
