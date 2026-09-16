@@ -1,91 +1,155 @@
-import os
+"""Storage abstraction.
+
+Defines a backend-agnostic ``StorageBackend`` protocol plus the default
+local-filesystem implementation. A factory (``create_storage``) selects the
+concrete backend from ``core.config.settings`` so the application can migrate
+to S3 (or any object store) without touching call sites.
+
+Security properties:
+    * Stored keys are random (uuid4) + a sanitized suffix, so client-supplied
+      filenames can never influence the on-disk path.
+    * ``get_file_path`` re-resolves and verifies the path stays inside the
+      storage root (defence-in-depth against a poisoned DB row).
+    * ``save`` streams in fixed-size chunks (no full-file buffering into memory)
+      and can enforce a hard size cap, deleting partial files on failure.
+"""
+
+from __future__ import annotations
+
+import re
 import uuid
 from pathlib import Path
-from typing import IO, Union
+from typing import BinaryIO, Optional, Protocol, Union
+
 from fastapi import HTTPException, status
 
-class StorageService:
-    def __init__(self, storage_path: str = "storage"):
-        self.storage_path = Path(storage_path)
-        self.storage_path.mkdir(exist_ok=True)
-    
-    def save_file(self, file: Union[IO, bytes], filename: str) -> str:
-        """
-        Save a file to storage and return the secure unique path.
-        
-        Args:
-            file: File object or bytes to save
-            filename: Original filename (will be sanitized)
-            
-        Returns:
-            str: Secure unique filename for storage
-            
-        Raises:
-            HTTPException: If file cannot be saved
-        """
-        # Generate a secure unique filename
-        secure_filename = f"{uuid.uuid4().hex}_{filename}"
-        
-        # Create full path
-        file_path = self.storage_path / secure_filename
-        
-        try:
-            if hasattr(file, read):
-                # Handle file-like objects (like UploadFile)
-                with open(file_path, wb) as buffer:
-                    content = file.read()
-                    buffer.write(content)
-            else:
-                # Handle bytes directly
-                with open(file_path, wb) as buffer:
-                    buffer.write(file)
-            
-            return secure_filename
-        except Exception as e:
+from core.config import settings
+
+# Chunk size used when streaming uploads (1 MiB).
+_CHUNK_SIZE = 1024 * 1024
+
+
+class StorageBackend(Protocol):
+    """Minimal interface every storage backend must satisfy.
+
+    ``key`` is an opaque, server-chosen identifier (not a client filename).
+    """
+
+    def save(self, stream: BinaryIO, filename: Optional[str], max_size: Optional[int] = None) -> str: ...
+
+    def delete(self, key: str) -> bool: ...
+
+    def get_file_path(self, key: str) -> Path: ...
+
+    def file_exists(self, key: str) -> bool: ...
+
+    def open(self, key: str) -> BinaryIO: ...
+
+    def size(self, key: str) -> int: ...
+
+
+def sanitize_filename(filename: Optional[str]) -> str:
+    """Reduce an arbitrary filename to a safe, collision-free suffix."""
+    if not filename:
+        return "unnamed"
+    filename = filename.replace("/", "").replace("\\", "").replace("\x00", "")
+    safe_chars = re.sub(r"[^\w.\-]", "", filename)
+    return safe_chars[:64] or "unnamed_file"
+
+
+class LocalStorage(StorageBackend):
+    """Local-disk storage backend (default, zero external dependencies)."""
+
+    def __init__(self, storage_path: Optional[Union[str, Path]] = None):
+        self.storage_path = Path(storage_path or settings.STORAGE_PATH)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+
+    def _assert_within_root(self, candidate: Path) -> Path:
+        root = self.storage_path.resolve()
+        resolved = candidate.resolve()
+        if root != resolved and root not in resolved.parents:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to save file: {str(e)}"
+                detail="Storage key escapes the configured storage root",
             )
-    
-    def get_file_path(self, filename: str) -> Path:
-        """
-        Get the full path for a stored file.
-        
-        Args:
-            filename: Secure filename
-            
-        Returns:
-            Path: Full path to the file
-        """
-        return self.storage_path / filename
-    
-    def delete_file(self, filename: str) -> bool:
-        """
-        Delete a file from storage.
-        
-        Args:
-            filename: Secure filename to delete
-            
-        Returns:
-            bool: True if deletion was successful
-        """
+        return resolved
+
+    def save(self, stream: BinaryIO, filename: Optional[str], max_size: Optional[int] = None) -> str:
+        """Stream ``stream`` to disk in chunks, enforcing an optional size cap."""
+        key = f"{uuid.uuid4().hex}_{sanitize_filename(filename)}"
+        dest = self.get_file_path(key)
         try:
-            file_path = self.get_file_path(filename)
-            if file_path.exists():
-                file_path.unlink()
+            written = 0
+            with open(dest, "wb") as buffer:
+                while True:
+                    chunk = stream.read(_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if max_size is not None and written > max_size:
+                        raise HTTPException(
+                            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                            detail="File size exceeds the allowed limit.",
+                        )
+                    buffer.write(chunk)
+            return key
+        except HTTPException:
+            dest.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to save file.",
+            ) from exc
+
+    def get_file_path(self, key: str) -> Path:
+        return self._assert_within_root(self.storage_path / key)
+
+    def delete(self, key: str) -> bool:
+        path = self.get_file_path(key)
+        if path.exists():
+            try:
+                path.unlink()
                 return True
-            return False
-        except Exception:
-            return False
-    
-    def file_exists(self, filename: str) -> bool:
+            except OSError:
+                return False
+        return False
+
+    def file_exists(self, key: str) -> bool:
+        return self.get_file_path(key).exists()
+
+    def open(self, key: str) -> BinaryIO:
+        """Return a read-mode file object for streaming the stored object.
+
+        The resolved path is re-verified to stay inside the storage root, and a
+        missing object raises HTTP 410 (the row may exist but the file be gone).
         """
-        Check if a file exists in storage.
-        
-        Args:
-            filename: Secure filename to check
-            
-        Returns:
-            bool: True if file exists
-        """
-        return self.get_file_path(filename).exists()
+        path = self.get_file_path(key)
+        if not path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Media file is no longer available.",
+            )
+        try:
+            return path.open("rb")
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to read media file.",
+            ) from exc
+
+    def size(self, key: str) -> int:
+        return self.get_file_path(key).stat().st_size
+
+
+def create_storage() -> StorageBackend:
+    """Select the configured storage backend (``local`` by default)."""
+    backend = (settings.STORAGE_BACKEND or "local").lower()
+    if backend == "local":
+        return LocalStorage()
+    raise ValueError(f"Unknown STORAGE_BACKEND: {settings.STORAGE_BACKEND!r}")
+
+
+# Backwards-compatible alias for code/tests that imported the old class name.
+StorageService = LocalStorage
