@@ -32,13 +32,14 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(
     data: dict,
-    user_id: Optional[int] = None,
+    user_id=None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     to_encode = data.copy()
     if user_id is not None:
+        # UUID is not JSON-serializable by python-jose -> store as string.
         to_encode.setdefault("sub", str(user_id))
-        to_encode.setdefault("user_id", user_id)
+        to_encode.setdefault("user_id", str(user_id))
     delta = expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": datetime.now(timezone.utc) + delta})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)

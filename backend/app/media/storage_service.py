@@ -43,6 +43,10 @@ class StorageBackend(Protocol):
 
     def file_exists(self, key: str) -> bool: ...
 
+    def open(self, key: str) -> BinaryIO: ...
+
+    def size(self, key: str) -> int: ...
+
 
 def sanitize_filename(filename: Optional[str]) -> str:
     """Reduce an arbitrary filename to a safe, collision-free suffix."""
@@ -114,6 +118,29 @@ class LocalStorage(StorageBackend):
 
     def file_exists(self, key: str) -> bool:
         return self.get_file_path(key).exists()
+
+    def open(self, key: str) -> BinaryIO:
+        """Return a read-mode file object for streaming the stored object.
+
+        The resolved path is re-verified to stay inside the storage root, and a
+        missing object raises HTTP 410 (the row may exist but the file be gone).
+        """
+        path = self.get_file_path(key)
+        if not path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Media file is no longer available.",
+            )
+        try:
+            return path.open("rb")
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to read media file.",
+            ) from exc
+
+    def size(self, key: str) -> int:
+        return self.get_file_path(key).stat().st_size
 
 
 def create_storage() -> StorageBackend:

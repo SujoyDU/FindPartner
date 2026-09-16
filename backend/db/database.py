@@ -7,23 +7,21 @@ from core.config import settings
 
 
 def _build_database_url() -> str:
-    """Return a SQLAlchemy DB URL guaranteed to use an installed driver.
+    """Return a SQLAlchemy DB URL guaranteed to use the psycopg 3 driver.
 
-    The project pins ``psycopg2`` (see requirements.txt). If a caller supplies
-    a plain ``postgresql://`` or the v3-only ``+psycopg`` scheme, we transparently
-    rewrite it to ``+psycopg2`` so the app boots with what's actually installed.
+    The project pins ``psycopg`` 3 (see requirements.txt). If a caller supplies
+    a plain ``postgresql://`` scheme we transparently rewrite it to
+    ``+psycopg`` so the app always boots with psycopg 3.
     """
     url = settings.DATABASE_URL
     if not url:
         return (
-            "postgresql+psycopg2://"
+            "postgresql+psycopg://"
             f"{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
             f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
         )
-    if url.startswith("postgresql+psycopg://"):
-        return url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
     if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        return url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
 

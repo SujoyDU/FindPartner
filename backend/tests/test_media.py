@@ -1,182 +1,160 @@
 # backend/tests/test_media.py
+"""Tests for the media service (new schema) and streaming helpers.
+
+Covers the security-sensitive ownership rules (BOLA / IDOR) with the updated
+``Media``/``MediaShare`` models (UUID ``owner_id``, media lives on the storage
+backend, share links in ``MediaShare``).
 """
-Tests for media functionality in the application.
-This includes upload, retrieval, deletion, and access control for user media.
-"""
+
+import uuid
+from datetime import datetime
+from unittest.mock import Mock
 
 import pytest
-from unittest.mock import Mock, patch
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
-from datetime import datetime
 
-# Test constants
-TEST_USER_ID = 1
-TEST_MEDIA_ID = 1
-TEST_FILENAME = "test_image.jpg"
-TEST_FILEPATH = "/uploads/test_image.jpg"
-TEST_PUBLIC_STATUS = True
+from app.media.service import MediaService
+from app.media.storage_service import LocalStorage
+from app.media.validators import detect_real_type
 
 
-def test_create_media_success():
-    """Test successful media creation."""
-    # Mock the database and service layer
-    mock_db = Mock(spec=Session)
-    mock_storage_service = Mock()
-    
-    # Test media creation logic here
-    # This would verify that media is created with correct user_id, filename, etc.
-    assert True  # Placeholder for actual test
+# --------------------------------------------------------------------------- #
+# Sample media builder (mimics a row owned by a specific user)
+# --------------------------------------------------------------------------- #
+def _media(owner_id, *, is_public=False, storage_key="key_1", media_type="image", mime="image/jpeg"):
+    m = Mock()  # plain attribute mock; we assert on ownership fields
+    m.id = uuid.uuid4()
+    m.owner_id = owner_id
+    m.is_public = is_public
+    m.storage_key = storage_key
+    m.media_type = media_type
+    m.mime_type = mime
+    m.file_name = "sample.jpg"
+    m.file_size = 12
+    m.created_at = datetime(2026, 1, 1, tzinfo=None)
+    m.updated_at = datetime(2026, 1, 1, tzinfo=None)
+    return m
 
 
-def test_get_user_media_success():
-    """Test retrieving user's own media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that user can retrieve their own media
-    # This would verify proper filtering by user_id
-    assert True  # Placeholder for actual test
+@pytest.fixture
+def service():
+    return MediaService(db=Mock(spec=Session), storage=Mock())
 
 
-def test_get_public_media_success():
-    """Test retrieving public media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that public media is accessible to all users
-    # This would verify that is_public=True media can be retrieved without auth issues
-    assert True  # Placeholder for actual test
+# --------------------------------------------------------------------------- #
+# Ownership / access control (BOLA / IDOR)
+# --------------------------------------------------------------------------- #
+def test_owner_can_fetch_own_media(service):
+    mine = _media(uuid.uuid4())
+    service.db.query.return_value.filter.return_value.first.return_value = mine
+    assert service.get_media_by_id(mine.id, mine.owner_id) is mine
 
 
-def test_delete_media_owner_access():
-    """Test that owner can delete their own media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test deletion permission for media owners
-    # This would verify that user can delete media they own
-    assert True  # Placeholder for actual test
+def test_non_owner_cannot_fetch_private_media(service):
+    # The service filters by Media.owner_id == caller; a non-owner lookup yields
+    # no row (the caller cannot even see that another user's item exists).
+    service.db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        service.get_media_by_id(uuid.uuid4(), uuid.uuid4())
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_delete_media_non_owner_access():
-    """Test that non-owner cannot delete media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that unauthorized users cannot delete media
-    # This would verify proper access control during deletion
-    assert True  # Placeholder for actual test
+def test_unknown_media_returns_404(service):
+    service.db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        service.get_media_by_id(uuid.uuid4(), uuid.uuid4())
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_get_media_by_id_owner_access():
-    """Test that owner can access their own media by ID."""
-    mock_db = Mock(spec=Session)
-    
-    # Test accessing specific media when owner
-    # This would verify proper ownership checks
-    assert True  # Placeholder for actual test
+def test_delete_media_non_owner_returns_404(service):
+    # Ownership filter yields no row -> 404, and the file must NOT be touched.
+    service.db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        service.delete_media(uuid.uuid4(), uuid.uuid4())
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
+    service.storage.delete.assert_not_called()
 
 
-def test_get_media_by_id_non_owner_access():
-    """Test that non-owner cannot access another user's private media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test access control for private media
-    # This would verify that unauthorized users get proper error responses
-    assert True  # Placeholder for actual test
+def test_delete_media_owner_removes_file(service):
+    mine = _media(uuid.uuid4(), storage_key="delete_me")
+    service.db.query.return_value.filter.return_value.first.return_value = mine
+    service.storage.delete.return_value = True
+    assert service.delete_media(mine.id, mine.owner_id) is True
+    service.storage.delete.assert_called_once_with("delete_me")
 
 
-def test_get_media_by_id_public_access():
-    """Test that anyone can access public media by ID."""
-    mock_db = Mock(spec=Session)
-    
-    # Test accessing public media without authentication
-    # This would verify that public media is accessible to all users
-    assert True  # Placeholder for actual test
+# --------------------------------------------------------------------------- #
+# Sharing (visibility)
+# --------------------------------------------------------------------------- #
+def test_public_media_resolves_via_share_token(service):
+    media = _media(uuid.uuid4(), is_public=True)
+    share = Mock()
+    share.media_id = media.id
+    share.share_token = "abc123"
+
+    # Make the shared DB lookup alternate: 1st call -> share (get_share_by_token),
+    # 2nd call -> media (get_public_media, filtered by share.media_id).
+    service.db.query.return_value.filter.return_value.first.side_effect = [share, media]
+    assert service.get_public_media_by_share_token("abc123") is media
 
 
-def test_upload_invalid_file_type():
-    """Test uploading invalid file types."""
-    mock_db = Mock(spec=Session)
-    mock_storage_service = Mock()
-    
-    # Test file type validation
-    # This would verify that unsupported file types are rejected
-    assert True  # Placeholder for actual test
+def test_invalid_share_token_returns_404(service):
+    service.db.query.return_value.filter.return_value.first.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        service.get_public_media_by_share_token("bad_token")
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_upload_exceeds_size_limit():
-    """Test uploading files that exceed size limits."""
-    mock_db = Mock(spec=Session)
-    mock_storage_service = Mock()
-    
-    # Test file size validation
-    # This would verify that oversized files are rejected
-    assert True  # Placeholder for actual test
+def test_revoking_public_media_returns_404_on_token(service):
+    # Token resolves to a share, but the media is no longer public.
+    media = _media(uuid.uuid4(), is_public=False)
+    share = Mock()
+    share.media_id = media.id
+    share.share_token = "tok"
+    service.db.query.return_value.filter.return_value.first.side_effect = [share, media]
+    with pytest.raises(HTTPException) as exc:
+        service.get_public_media_by_share_token("tok")
+    assert exc.value.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_media_access_control_private_media():
-    """Test that private media cannot be accessed by unauthorized users."""
-    mock_db = Mock(spec=Session)
-    
-    # Test access control for private media
-    # This would verify that private media is protected from unauthorized access
-    assert True  # Placeholder for actual test
+# --------------------------------------------------------------------------- #
+# Magic-byte type detection (upload validation)
+# --------------------------------------------------------------------------- #
+def test_detect_jpeg_magic_bytes():
+    assert detect_real_type(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01") == "image/jpeg"
 
 
-def test_media_access_control_public_media():
-    """Test that public media can be accessed by anyone."""
-    mock_db = Mock(spec=Session)
-    
-    # Test access control for public media
-    # This would verify that public media is accessible to all users
-    assert True  # Placeholder for actual test
+def test_detect_png_magic_bytes():
+    assert detect_real_type(b"\x89PNG\r\n\x1a\n\x00\x00\x00") == "image/png"
 
 
-# Security-focused tests
-def test_media_deletion_security():
-    """Test that deletion operations properly validate ownership."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that deletion cannot be performed by unauthorized users
-    # This verifies the security of delete operations
-    assert True  # Placeholder for actual test
+def test_reject_unsupported_type():
+    assert detect_real_type(b"PK\x03\x04") is None  # zip / not media
 
 
-def test_media_retrieval_security():
-    """Test that retrieval operations properly validate access rights."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that users can only access media they own or that is public
-    # This verifies the security of read operations
-    assert True  # Placeholder for actual test
+# --------------------------------------------------------------------------- #
+# Streaming helpers (files live on storage, never in the DB)
+# --------------------------------------------------------------------------- #
+def test_open_stream_uses_storage_key(tmp_path):
+    backend = LocalStorage(tmp_path)
+    key = backend.save(_bytes(b"hello"), "x.jpg")
+    svc = MediaService(db=Mock(spec=Session), storage=backend)
+    media = _media(uuid.uuid4(), storage_key=key)
+    with svc.open_stream(media) as fh:
+        assert fh.read() == b"hello"
 
 
-def test_media_shareable_url_security():
-    """Test that shareable URLs work correctly for public media."""
-    mock_db = Mock(spec=Session)
-    
-    # Test that public media can be accessed via shareable URL
-    # This verifies the security of the sharing mechanism
-    assert True  # Placeholder for actual test
+def test_size_helper(tmp_path):
+    backend = LocalStorage(tmp_path)
+    key = backend.save(_bytes(b"12345"), "x.jpg")
+    svc = MediaService(db=Mock(spec=Session), storage=backend)
+    assert svc.stream_size(_media(uuid.uuid4(), storage_key=key)) == 5
 
 
-# Integration tests
-@pytest.mark.asyncio
-async def test_create_and_retrieve_media_integration():
-    """Integration test for creating and retrieving media."""
-    # Test full workflow: create -> retrieve -> verify data integrity
-    assert True  # Placeholder for actual test
-
-
-@pytest.mark.asyncio 
-async def test_delete_media_integration():
-    """Integration test for deleting media."""
-    # Test full workflow: create -> delete -> verify deletion
-    assert True  # Placeholder for actual test
-
-
-def test_file_storage_security():
-    """Test that file storage handles filenames securely."""
-    # Test that filenames are sanitized and secure
-    assert True  # Placeholder for actual test
+def _bytes(data: bytes):
+    import io
+    return io.BytesIO(data)
 
 
 if __name__ == "__main__":

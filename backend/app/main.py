@@ -13,7 +13,7 @@ from app.auth.router import router as auth_router
 from app.media.router import router as media_router
 from app.user_management.router import router as user_management_router
 from core.config import settings
-from db.database import engine, Base
+from db.database import engine
 from core.logging_conf import configure_logging
 
 
@@ -36,13 +36,8 @@ _enforce_production_secrets()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # In development we still create tables so the app can boot against a clean
-    # Postgres without needing to run Alembic manually. In production we rely on
-    # the `alembic upgrade head` job run by the operator; this call is harmless
-    # because `create_all` is a no-op if the tables already exist with matching
-    # shape (it does not drop or alter them).
-    if settings.ENV in {"development", "test"}:
-        Base.metadata.create_all(bind=engine)
+    # Schema is managed exclusively by Alembic (``alembic upgrade head``);
+    # the application never creates or alters tables at runtime.
     # Connectivity smoke test: if Postgres is unreachable, fail fast at startup.
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))

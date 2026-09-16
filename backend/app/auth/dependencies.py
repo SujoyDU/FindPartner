@@ -29,10 +29,7 @@ def get_current_user(
             user_id = payload.get("user_id")
         if user_id is None:
             raise _credentials_exception()
-        try:
-            user_id = int(user_id)
-        except (TypeError, ValueError):
-            raise _credentials_exception()
+        user_id = str(user_id)
     except JWTError:
         raise _credentials_exception()
 

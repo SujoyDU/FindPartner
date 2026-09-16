@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class UserUpdate(BaseModel):
@@ -20,7 +22,7 @@ class UserDeactivate(BaseModel):
 
 
 class UserOut(BaseModel):
-    id: int
+    id: UUID
     username: str
     email: EmailStr
     is_active: bool
@@ -28,8 +30,7 @@ class UserOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserList(UserOut):

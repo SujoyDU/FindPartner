@@ -1,4 +1,5 @@
 # Tests authentication functionality without admin privileges
+import uuid
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -7,15 +8,18 @@ from app.auth.schemas import UserCreate, UserOut
 client = TestClient(app)
 
 def test_user_registration_without_admin_privileges():
-    """Test that users can register without admin privileges"""
+    """Test that users can register without admin privileges (idempotent per run)."""
+    tag = uuid.uuid4().hex[:8]
+    username = "testuser_" + tag
+    email = f"test{tag}@example.com"
     response = client.post("/auth/register", json={
-        "username": "testuser",
-        "email": "test@example.com",
+        "username": username,
+        "email": email,
         "password": "password123"
     })
-    assert response.status_code == 200
+    assert response.status_code == 201
     data = response.json()
-    assert data["username"] == "testuser"
+    assert data["username"] == username
     assert "is_admin" not in data or data.get("is_admin") is False
 
 def test_user_schema_validation():

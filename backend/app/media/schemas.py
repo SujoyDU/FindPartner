@@ -1,37 +1,36 @@
-from pydantic import BaseModel
+"""Pydantic schemas for the media API.
+
+``MediaOut`` is the public response shape: it exposes safe metadata and the
+share token (when the item is public). It never leaks the storage key or any
+filesystem path.
+"""
+
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
-class MediaBase(BaseModel):
+from pydantic import BaseModel, ConfigDict
+
+
+class MediaOut(BaseModel):
+    id: UUID
+    owner_id: UUID
     file_name: str
-    file_path: str
-    file_type: str
+    # "image" | "video"
+    media_type: str
+    # e.g. "image/jpeg", "video/mp4"
+    mime_type: Optional[str] = None
+    file_size: int = 0
     is_public: bool = False
     share_token: Optional[str] = None
     created_at: datetime
+    updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-class MediaCreate(BaseModel):
-    file_name: str
-    file_path: str
-    file_type: str
-    is_public: bool = False
-
-class MediaUpdate(BaseModel):
-    is_public: bool = False
-
-class MediaOut(MediaBase):
-    id: int
-    user_id: int
 
 class MediaList(BaseModel):
-    id: int
-    file_name: str
-    is_public: bool
-    share_token: Optional[str] = None
-    created_at: datetime
+    items: list[MediaOut]
+    total: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

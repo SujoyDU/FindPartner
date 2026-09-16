@@ -42,7 +42,7 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     db_user = User(
         username=user.username,
         email=email_normalized,
-        hashed_password=get_password_hash(user.password),
+        password_hash=get_password_hash(user.password),
         is_active=True,
         is_admin=False,
     )
@@ -60,7 +60,7 @@ def login(user: UserLogin, db: Session = Depends(get_db)):
         .filter((User.email == email_normalized) | (User.email == user.email))
         .first()
     )
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
+    if not db_user or not verify_password(user.password, db_user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
